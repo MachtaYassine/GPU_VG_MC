@@ -1,0 +1,7 @@
+Training/
+Testing/
+# Ignore all files in the Training and Testing directories
+
+#ignore cuda executables
+vg_mc
+vg_test
