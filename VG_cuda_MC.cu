@@ -34,71 +34,7 @@ __global__ void init_curand_state_k(curandState* state) {
     curand_init(0, idx, 0, &state[idx]);
 }
 
-/**
- * @brief Monte Carlo kernel for the Variance Gamma (VG) model using index decoding for parameter grid.
- *
- * Each thread simulates option pricing for a unique combination of parameters (T, K, kappa, theta, sigma),
- * using a flat thread index and decoding it into multidimensional parameter indices, as in MCexpOU.cu.
- * This approach enables efficient parallelization over all parameter combinations.
- */
-// __global__ void vg_mc_kernel_flat_indexed(
-//     int nT, int nKappa, int nTheta, int nSigma, int nK,
-//     const float* T_grid,
-//     const float* kappa_grid,
-//     const float* theta_grid,
-//     const float* sigma_grid,
-//     const float* K_grid, // flattened: nT * nK
-//     int nSteps,
-//     int nPaths,
-//     float* d_price,
-//     float* d_var,
-//     curandState_t* states
-// ) {
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     int total = nT * nKappa * nTheta * nSigma * nK;
-//     if (idx >= total) return;
-//     int same = idx;
-//     int isigma = same % nSigma;
-//     same /= nSigma;
-//     int ik = same % nK;
-//     same /= nK;
-//     int itheta = same % nTheta;
-//     same /= nTheta;
-//     int ikappa = same % nKappa;
-//     same /= nKappa;
-//     int it = same % nT;
-//     // Serpentine (zigzag) ordering
-//     if (ik % 2 == 1) isigma = nSigma - 1 - isigma;
-//     if (itheta % 2 == 1) ik = nK - 1 - ik;
-//     if (ikappa % 2 == 1) itheta = nTheta - 1 - itheta;
-//     if (it % 2 == 1) ikappa = nKappa - 1 - ikappa;
-//     // Fetch parameters
-//     float T = T_grid[it];
-//     float kappa = kappa_grid[ikappa];
-//     float theta = theta_grid[itheta];
-//     float sigma = sigma_grid[isigma];
-//     float K = K_grid[it * nK + ik];
-//     float sum = 0.0f, sum2 = 0.0f;
-//     curandState_t localState = states[idx];
-//     for (int i = 0; i < nPaths; ++i) {
-//         float XVG = simulate_vg(T, nSteps, sigma, theta, kappa, &localState);
-//         float YT = expf(XVG); // Y0 = 1
-//         float payoff = fmaxf(YT - K, 0.0f);
-//         sum += payoff;
-//         sum2 += payoff * payoff;
-//     }
-//     d_price[idx] = sum / nPaths;
-//     d_var[idx] = sum2 / nPaths;
-//     states[idx] = localState;
-// }
 
-/**
- * @brief Monte Carlo kernel for the Variance Gamma (VG) model for a single (T, K) combination.
- *
- * Each thread simulates option pricing for a unique combination of parameters (kappa, theta, sigma),
- * using a flat thread index and decoding it into multidimensional parameter indices.
- * This approach enables efficient parallelization over all parameter combinations for a single (T, K).
- */
 __device__ float kappa_d[10];
 __device__ float theta_d[10];
 __device__ float sigma_d[10];
@@ -239,7 +175,7 @@ void benchmark_indexing_kernels(
     testCUDA(cudaMemcpy(d_sigma, h_sigma, total * sizeof(float), cudaMemcpyHostToDevice));
     curandState_t* d_states;
     testCUDA(cudaMalloc(&d_states, total * sizeof(curandState_t)));
-    int threads = 1024;
+    int threads = 256;
     int blocks = (total + threads - 1) / threads;
     init_curand_states<<<blocks, threads>>>(d_states, total, 42UL);
     testCUDA(cudaDeviceSynchronize());
@@ -297,7 +233,7 @@ int main(int argc, char** argv) {
     int nKappa = 10, nTheta = 10, nSigma = 10;
     int nSteps = 64;
     int nPaths = 8192;
-    int nRepeat = 5;
+    int nRepeat = 10;
     // Fixed parameter grids
     float sigma_grid[10] = { 0.1f, 0.12f, 0.13f, 0.14f, 0.15f, 0.16f, 0.17f, 0.18f, 0.19f, 0.2f };
     float theta_grid[10] = { -0.34f, -0.3f, -0.27f, -0.24f, -0.21f, -0.25f, -0.26f, -0.35f, -0.4f, -0.45f };
@@ -324,12 +260,10 @@ int main(int argc, char** argv) {
 
     mkdir("Training", 0777);
     mkdir("Testing", 0777);
-    char fname[256];
     for (int it = 0; it < nT; ++it) {
         float T = T_grid[it];
         float Kvec[16];
         strikeInterval(Kvec, T);
-        int nK = 16;
         int total = nKappa * nTheta * nSigma * nK;
         float *d_price, *d_var;
         testCUDA(cudaMalloc(&d_price, total * sizeof(float)));
@@ -360,15 +294,19 @@ int main(int argc, char** argv) {
             sprintf(fname, "%s/VG_T%.2f_K%.4f.csv", folder, T, K);
             FILE* f = fopen(fname, "w");
             fprintf(f, "kappa,theta,sigma,price,95CI\n");
-            for (int ikappa = 0; ikappa < nKappa; ++ikappa)
-                for (int itheta = 0; itheta < nTheta; ++itheta)
-                    for (int isigma = 0; isigma < nSigma; ++isigma) {
-                        int idx = (((ikappa * nTheta + itheta) * nSigma + isigma) * nK) + ik;
-                        float price = h_price[idx];
-                        float var = h_var[idx] - price * price;
-                        float ci = 1.96f * sqrtf(var / nPaths);
-                        fprintf(f, "%f,%f,%f,%f,%f\n", kappa_grid[ikappa], theta_grid[itheta], sigma_grid[isigma], price, ci);
-                    }
+            for (int flat_idx = 0; flat_idx < nKappa * nTheta * nSigma; ++flat_idx) {
+                int same = flat_idx;
+                int isigma = same % nSigma;
+                same /= nSigma;
+                int itheta = same % nTheta;
+                same /= nTheta;
+                int ikappa = same % nKappa;
+                int idx = (((ikappa * nTheta + itheta) * nSigma + isigma) * nK) + ik;
+                float price = h_price[idx];
+                float var = h_var[idx] - price * price;
+                float ci = 1.96f * sqrtf(var / nPaths);
+                fprintf(f, "%f,%f,%f,%f,%f\n", kappa_grid[ikappa], theta_grid[itheta], sigma_grid[isigma], price, ci);
+            }
             fclose(f);
         }
         free(h_price); free(h_var);

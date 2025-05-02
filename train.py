@@ -67,7 +67,7 @@ class VGNet(nn.Module):
 # Training Loop
 # ----------------------------
 
-def train(model, train_loader, val_loader, epochs=5):
+def train(model, train_loader, val_loader, epochs=10):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss_fn = nn.MSELoss()
 
@@ -336,8 +336,8 @@ if __name__ == "__main__":
     parser.add_argument("--train_folder", type=str, default="Training/", help="Path to the training data folder.")
     parser.add_argument("--test_folder", type=str, default="Testing/", help="Path to the testing data folder.")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs.")
-    parser.add_argument("--batch_size", type=int, default=256, help="Batch size for training and validation.")
-    parser.add_argument("--test_batch_size", type=int, default=256, help="Batch size for testing.")
+    parser.add_argument("--batch_size", type=int, default=512, help="Batch size for training and validation.")
+    parser.add_argument("--test_batch_size", type=int, default=512, help="Batch size for testing.")
     parser.add_argument("--checkpoint_path", type=str, default="checkpoints/vgnet_model.pth", help="Path to the model checkpoint.")
     parser.add_argument("--device", type=str, default="cuda:0", help="Device to use for training and evaluation (cpu or cuda).")
 
